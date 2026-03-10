@@ -1,0 +1,28 @@
+# Dart/Flutter tool state
+.dart_tool/
+.packages
+.pub/
+pubspec.lock
+
+# Build outputs
+build/
+
+# Flutter plugin symlinks and metadata
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Example app generated files
+example/.dart_tool/
+example/.packages
+example/.flutter-plugins
+example/.flutter-plugins-dependencies
+example/build/
+
