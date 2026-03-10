@@ -34,6 +34,7 @@ class Ulinq {
   static UlinqEventQueue? _eventQueue;
   static final StreamController<UlinqResolvedLink> _onLinkController =
       StreamController<UlinqResolvedLink>.broadcast();
+  static final Set<String> _deliveredSessionKeys = <String>{};
   static const LinkParser _linkParser = LinkParser();
   static String? _pendingInstallToken;
   static bool? _isFirstLaunch;
@@ -59,6 +60,7 @@ class Ulinq {
       storage: SharedPrefsEventQueueStorage(),
       sendBatch: _sendBatchQueuedEvents,
     );
+    _deliveredSessionKeys.clear();
     final restored = await _eventQueue!.restorePersistedEvents(
       sender: _sendRestoredQueuedEvent,
     );
@@ -76,8 +78,15 @@ class Ulinq {
       isDebugEnabled: _isDebugEnabledFlag,
       onForeground: () => _eventQueue!.flush(reason: 'foreground'),
     );
-    _sessionManager!.onLinkReceived.listen(_onLinkController.add);
+    _sessionManager!.onLinkReceived.listen(
+      (resolved) => _emitResolvedLink(
+        resolved,
+        source: 'session_manager',
+      ),
+    );
     await _sessionManager!.initSession();
+    _debug('ulinq deferred attribution attempted');
+    await _attemptAutomaticDeferredAttribution();
   }
 
   static void enableDebug([bool enabled = true]) {
@@ -143,9 +152,16 @@ class Ulinq {
       final deeplinkId = attribution.deeplinkId?.trim();
       if (deeplinkId != null && deeplinkId.isNotEmpty) {
         try {
+          _debug(
+              'ulinq resolving identifier source=deferred deeplink_id=$deeplinkId');
           final resolved = await _resolveByDeeplinkId(deeplinkId);
           if (resolved != null) {
-            _onLinkController.add(resolved);
+            _emitResolvedLink(
+              resolved,
+              source: 'deferred_attribution',
+            );
+            _debug(
+                'ulinq deferred deeplink resolved deeplink_id=${resolved.deeplinkId}');
           }
         } on UlinqException {
           // Attribution succeeded even if resolve fails.
@@ -338,13 +354,14 @@ class Ulinq {
     _pendingInstallToken = null;
     _isFirstLaunch = null;
     _debugEnabled = false;
+    _deliveredSessionKeys.clear();
   }
 
   static Future<UlinqResolvedLink?> _resolveIdentifierForSession(
     LinkIdentifier identifier,
     SessionLinkSource source,
   ) async {
-    _debug('session resolve source=${source.name}');
+    _debug('ulinq resolving identifier source=${source.name}');
     return _resolveIdentifier(identifier);
   }
 
@@ -443,22 +460,89 @@ class Ulinq {
   }
 
   static Future<UlinqResolvedLink?> _resolveByToken(String token) async {
+    _debug('ulinq resolve request query=token');
     final payload = await _network!.getJson('/sdk/v1/deeplinks/resolve',
         query: <String, dynamic>{'token': token});
-    return UlinqResolvedLink.fromJson(payload);
+    final resolved = UlinqResolvedLink.fromJson(payload);
+    _debug(
+        'ulinq resolve success via token deeplink_id=${resolved.deeplinkId}');
+    return resolved;
   }
 
   static Future<UlinqResolvedLink?> _resolveBySlug(String slug) async {
+    _debug('ulinq resolve request query=slug');
     final payload = await _network!.getJson('/sdk/v1/deeplinks/resolve',
         query: <String, dynamic>{'slug': slug});
-    return UlinqResolvedLink.fromJson(payload);
+    final resolved = UlinqResolvedLink.fromJson(payload);
+    _debug('ulinq resolve success via slug deeplink_id=${resolved.deeplinkId}');
+    return resolved;
   }
 
   static Future<UlinqResolvedLink?> _resolveByDeeplinkId(
       String deeplinkId) async {
+    _debug('ulinq resolve request query=deeplink_id');
     final payload = await _network!.getJson('/sdk/v1/deeplinks/resolve',
         query: <String, dynamic>{'deeplink_id': deeplinkId});
-    return UlinqResolvedLink.fromJson(payload);
+    final resolved = UlinqResolvedLink.fromJson(payload);
+    _debug(
+        'ulinq resolve success via deeplink_id deeplink_id=${resolved.deeplinkId}');
+    return resolved;
+  }
+
+  static Future<void> _attemptAutomaticDeferredAttribution() async {
+    final firstLaunch = await isFirstLaunch();
+    if (!firstLaunch) {
+      return;
+    }
+
+    final hasDirectLink = await _hasResolvableInitialLink();
+    if (hasDirectLink) {
+      _debug('skip automatic deferred attribution: initial deep link present');
+      return;
+    }
+
+    try {
+      await claimInstallAttribution();
+    } on UlinqInvalidResponseException catch (e) {
+      if (e.statusCode == 400 || e.statusCode == 404) {
+        _debug('automatic deferred attribution unavailable');
+      }
+    } on UlinqException catch (_) {
+      // Do not block initialization if deferred attribution cannot be claimed.
+    }
+  }
+
+  static void _emitResolvedLink(
+    UlinqResolvedLink resolved, {
+    required String source,
+  }) {
+    final deeplinkId = resolved.deeplinkId?.trim();
+    final sessionId = _sessionManager?.currentSessionId.trim();
+    if (sessionId != null &&
+        sessionId.isNotEmpty &&
+        deeplinkId != null &&
+        deeplinkId.isNotEmpty) {
+      final key = '$sessionId:$deeplinkId';
+      if (_deliveredSessionKeys.contains(key)) {
+        _debug('ulinq payload delivery dedupe hit key=$key source=$source');
+        return;
+      }
+      _deliveredSessionKeys.add(key);
+    }
+    _onLinkController.add(resolved);
+    _debug(
+        'ulinq payload delivered source=$source deeplink_id=${resolved.deeplinkId} session_id=${_sessionManager?.currentSessionId}');
+  }
+
+  static Future<bool> _hasResolvableInitialLink() async {
+    try {
+      final uri = await _appLinks!.getInitialLink();
+      final parsed = _linkParser.parseFromUri(uri);
+      return (parsed.token != null && parsed.token!.isNotEmpty) ||
+          (parsed.slug != null && parsed.slug!.isNotEmpty);
+    } on services.PlatformException {
+      return false;
+    }
   }
 
   static Future<String?> _resolveInstallToken() async {

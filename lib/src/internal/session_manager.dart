@@ -144,7 +144,7 @@ class UlinqSessionManager with WidgetsBindingObserver {
       return;
     }
 
-    _debug('session link source=${source.name} uri=$normalized');
+    _debug('ulinq link detected source=${source.name} uri=$normalized');
     final resolved = await _resolver(identifier, source);
     _lastHandledLink = normalized;
     if (resolved != null) {
@@ -169,7 +169,7 @@ class UlinqSessionManager with WidgetsBindingObserver {
     _lastHandledLink = null;
     _handledDeeplinksInSession.clear();
     _debug(
-      'session start #$_sessionCount type=${isColdStart ? 'cold' : 'warm'} session_id=$_sessionId',
+      'ulinq session start #$_sessionCount type=${isColdStart ? 'cold' : 'warm'} session_id=$_sessionId',
     );
   }
 

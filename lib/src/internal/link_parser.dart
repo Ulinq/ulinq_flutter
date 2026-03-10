@@ -9,34 +9,52 @@ class LinkParser {
     final trimmed = raw.trim();
     if (trimmed.isEmpty) return const LinkIdentifier();
 
-    final referrer = _parseReferrer(trimmed);
-    if (!referrer.isEmpty) return referrer;
-
     final uri = Uri.tryParse(trimmed);
-    if (uri != null) {
+    final shouldParseAsUri =
+        uri != null && (uri.hasScheme || trimmed.startsWith('/'));
+    if (uri != null && shouldParseAsUri) {
       final token = uri.queryParameters['token']?.trim();
-      if (token != null && token.isNotEmpty) {
-        return LinkIdentifier(token: token);
-      }
-
       final installToken = uri.queryParameters['install_token']?.trim();
-      if (installToken != null && installToken.isNotEmpty) {
-        return LinkIdentifier(installToken: installToken);
-      }
+
+      LinkIdentifier fromReferrer = const LinkIdentifier();
 
       final referrerParam = uri.queryParameters['referrer']?.trim();
       if (referrerParam != null && referrerParam.isNotEmpty) {
         final parsedReferrer = _parseReferrer(referrerParam);
         if (!parsedReferrer.isEmpty) {
-          return parsedReferrer;
+          fromReferrer = parsedReferrer;
         }
       }
 
-      final slug = _slugFromUri(uri);
-      if (slug != null) {
-        return LinkIdentifier(slug: slug);
+      LinkIdentifier fromDl = const LinkIdentifier();
+      final dl = uri.queryParameters['dl']?.trim();
+      if (dl != null && dl.isNotEmpty) {
+        fromDl = parseFromString(Uri.decodeQueryComponent(dl));
+      }
+
+      final resolvedToken = token != null && token.isNotEmpty
+          ? token
+          : fromReferrer.token ?? fromDl.token;
+      final resolvedInstallToken =
+          installToken != null && installToken.isNotEmpty
+              ? installToken
+              : fromReferrer.installToken;
+      final resolvedSlug =
+          fromReferrer.slug ?? fromDl.slug ?? _slugFromUri(uri);
+
+      if ((resolvedToken != null && resolvedToken.isNotEmpty) ||
+          (resolvedInstallToken != null && resolvedInstallToken.isNotEmpty) ||
+          (resolvedSlug != null && resolvedSlug.isNotEmpty)) {
+        return LinkIdentifier(
+          token: resolvedToken,
+          installToken: resolvedInstallToken,
+          slug: resolvedSlug,
+        );
       }
     }
+
+    final referrer = _parseReferrer(trimmed);
+    if (!referrer.isEmpty) return referrer;
 
     final slugMatch = RegExp(r'/r/([^/?]+)').firstMatch(trimmed);
     if (slugMatch != null) {
@@ -108,6 +126,12 @@ class LinkParser {
     final segments = uri.pathSegments;
     if (segments.length >= 2 && segments[segments.length - 2] == 'r') {
       return segments.last;
+    }
+    if (segments.length == 1) {
+      final only = segments.first.trim();
+      if (only.isNotEmpty) {
+        return only;
+      }
     }
     return null;
   }
