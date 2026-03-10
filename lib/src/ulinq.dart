@@ -36,6 +36,7 @@ class Ulinq {
       StreamController<UlinqResolvedLink>.broadcast();
   static final Set<String> _deliveredSessionKeys = <String>{};
   static const LinkParser _linkParser = LinkParser();
+  static UlinqResolvedLink? _lastResolvedLink;
   static String? _pendingInstallToken;
   static bool? _isFirstLaunch;
   static bool _debugEnabled = false;
@@ -61,6 +62,7 @@ class Ulinq {
       sendBatch: _sendBatchQueuedEvents,
     );
     _deliveredSessionKeys.clear();
+    _lastResolvedLink = null;
     final restored = await _eventQueue!.restorePersistedEvents(
       sender: _sendRestoredQueuedEvent,
     );
@@ -102,6 +104,15 @@ class Ulinq {
 
   static Stream<UlinqResolvedLink> get onLink => _onLinkController.stream;
   static Stream<UlinqResolvedLink> get onLinkReceived => onLink;
+  static UlinqResolvedLink? getLastResolvedLink() => _copyResolvedLink(
+        _lastResolvedLink,
+      );
+  static Map<String, dynamic>? getLastPayload() => _lastResolvedLink == null
+      ? null
+      : Map<String, dynamic>.from(_lastResolvedLink!.payload);
+  static Map<String, dynamic>? getLastMetadata() => _lastResolvedLink == null
+      ? null
+      : Map<String, dynamic>.from(_lastResolvedLink!.metadata);
 
   static Future<bool> isFirstLaunch() async {
     _ensureInitialized();
@@ -353,6 +364,7 @@ class Ulinq {
     _skAdNetworkTracker = null;
     _pendingInstallToken = null;
     _isFirstLaunch = null;
+    _lastResolvedLink = null;
     _debugEnabled = false;
     _deliveredSessionKeys.clear();
   }
@@ -464,6 +476,7 @@ class Ulinq {
     final payload = await _network!.getJson('/sdk/v1/deeplinks/resolve',
         query: <String, dynamic>{'token': token});
     final resolved = UlinqResolvedLink.fromJson(payload);
+    _lastResolvedLink = _copyResolvedLink(resolved);
     _debug(
         'ulinq resolve success via token deeplink_id=${resolved.deeplinkId}');
     return resolved;
@@ -474,6 +487,7 @@ class Ulinq {
     final payload = await _network!.getJson('/sdk/v1/deeplinks/resolve',
         query: <String, dynamic>{'slug': slug});
     final resolved = UlinqResolvedLink.fromJson(payload);
+    _lastResolvedLink = _copyResolvedLink(resolved);
     _debug('ulinq resolve success via slug deeplink_id=${resolved.deeplinkId}');
     return resolved;
   }
@@ -484,6 +498,7 @@ class Ulinq {
     final payload = await _network!.getJson('/sdk/v1/deeplinks/resolve',
         query: <String, dynamic>{'deeplink_id': deeplinkId});
     final resolved = UlinqResolvedLink.fromJson(payload);
+    _lastResolvedLink = _copyResolvedLink(resolved);
     _debug(
         'ulinq resolve success via deeplink_id deeplink_id=${resolved.deeplinkId}');
     return resolved;
@@ -516,6 +531,7 @@ class Ulinq {
     UlinqResolvedLink resolved, {
     required String source,
   }) {
+    _lastResolvedLink = _copyResolvedLink(resolved);
     final deeplinkId = resolved.deeplinkId?.trim();
     final sessionId = _sessionManager?.currentSessionId.trim();
     if (sessionId != null &&
@@ -652,5 +668,20 @@ class Ulinq {
     if (_debugEnabled) {
       _logger.debug(message);
     }
+  }
+
+  static UlinqResolvedLink? _copyResolvedLink(UlinqResolvedLink? link) {
+    if (link == null) {
+      return null;
+    }
+    return UlinqResolvedLink(
+      deeplinkId: link.deeplinkId,
+      appId: link.appId,
+      projectId: link.projectId,
+      slug: link.slug,
+      subdomain: link.subdomain,
+      payload: Map<String, dynamic>.from(link.payload),
+      metadata: Map<String, dynamic>.from(link.metadata),
+    );
   }
 }

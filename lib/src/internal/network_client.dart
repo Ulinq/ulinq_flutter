@@ -46,9 +46,14 @@ class NetworkClient {
 
   Future<Map<String, dynamic>> getJson(String path,
       {Map<String, dynamic>? query}) async {
+    final headers = _authHeaders();
     final response = await _requestWithRetry(
-      () => _dio.get<dynamic>(path,
-          queryParameters: query, options: Options(headers: _authHeaders())),
+      method: 'GET',
+      path: path,
+      query: query,
+      headers: headers,
+      send: () => _dio.get<dynamic>(path,
+          queryParameters: query, options: Options(headers: headers)),
     );
     final data = response.data;
     if (data is Map<String, dynamic>) return data;
@@ -68,7 +73,11 @@ class NetworkClient {
       'Content-Type': 'application/json',
     };
     final response = await _requestWithRetry(
-      () => _dio.post<dynamic>(path,
+      method: 'POST',
+      path: path,
+      body: body,
+      headers: headers,
+      send: () => _dio.post<dynamic>(path,
           data: body, options: Options(headers: headers)),
     );
     final data = response.data;
@@ -80,12 +89,43 @@ class NetworkClient {
     return <String, dynamic>{};
   }
 
-  Future<Response<dynamic>> _requestWithRetry(
-      Future<Response<dynamic>> Function() send) async {
+  Future<Response<dynamic>> _requestWithRetry({
+    required String method,
+    required String path,
+    required Future<Response<dynamic>> Function() send,
+    Map<String, dynamic>? query,
+    Map<String, dynamic>? body,
+    Map<String, String>? headers,
+  }) async {
+    final startedAt = DateTime.now();
+    _logRequest(
+      method: method,
+      path: path,
+      query: query,
+      body: body,
+      headers: headers,
+      attempt: 1,
+    );
     try {
-      return await send();
+      final response = await send();
+      _logSuccess(
+        method: method,
+        path: path,
+        response: response,
+        startedAt: startedAt,
+        attempt: 1,
+      );
+      return response;
     } on DioException catch (e) {
       final retryable = _isRetryable(e);
+      _logFailure(
+        method: method,
+        path: path,
+        error: e,
+        startedAt: startedAt,
+        attempt: 1,
+        willRetry: retryable,
+      );
       if (!retryable) {
         throw _mapError(e);
       }
@@ -93,11 +133,131 @@ class NetworkClient {
       final jitterMs = 100 + _random.nextInt(150);
       await Future<void>.delayed(Duration(milliseconds: jitterMs));
 
+      _logRequest(
+        method: method,
+        path: path,
+        query: query,
+        body: body,
+        headers: headers,
+        attempt: 2,
+      );
       try {
-        return await send();
+        final response = await send();
+        _logSuccess(
+          method: method,
+          path: path,
+          response: response,
+          startedAt: startedAt,
+          attempt: 2,
+        );
+        return response;
       } on DioException catch (second) {
+        _logFailure(
+          method: method,
+          path: path,
+          error: second,
+          startedAt: startedAt,
+          attempt: 2,
+          willRetry: false,
+        );
         throw _mapError(second);
       }
+    }
+  }
+
+  void _logRequest({
+    required String method,
+    required String path,
+    required int attempt,
+    Map<String, dynamic>? query,
+    Map<String, dynamic>? body,
+    Map<String, String>? headers,
+  }) {
+    if (!_config.enableLogging) return;
+    _logger.debug(
+      'HTTP request[$attempt] method=$method '
+      'url=${_fullUrl(path)} '
+      'auth=${_config.authHeaderMode.name} '
+      'headers=${_formatJson(_sanitizeHeaders(headers))} '
+      'query=${_formatJson(query)} '
+      'body=${_formatJson(body)}',
+    );
+  }
+
+  void _logSuccess({
+    required String method,
+    required String path,
+    required Response<dynamic> response,
+    required DateTime startedAt,
+    required int attempt,
+  }) {
+    if (!_config.enableLogging) return;
+    final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+    _logger.debug(
+      'HTTP success[$attempt] method=$method '
+      'url=${_fullUrl(path)} '
+      'status=${response.statusCode ?? 'n/a'} '
+      'duration_ms=$elapsedMs '
+      'response=${_formatJson(response.data)}',
+    );
+  }
+
+  void _logFailure({
+    required String method,
+    required String path,
+    required DioException error,
+    required DateTime startedAt,
+    required int attempt,
+    required bool willRetry,
+  }) {
+    if (!_config.enableLogging) return;
+    final elapsedMs = DateTime.now().difference(startedAt).inMilliseconds;
+    _logger.warn(
+      'HTTP failure[$attempt] method=$method '
+      'url=${_fullUrl(path)} '
+      'status=${error.response?.statusCode ?? 'n/a'} '
+      'type=${error.type.name} '
+      'retry=${willRetry ? 'yes' : 'no'} '
+      'duration_ms=$elapsedMs '
+      'message=${error.message ?? 'n/a'} '
+      'response=${_formatJson(error.response?.data)}',
+    );
+  }
+
+  String _fullUrl(String path) => _dio.options.baseUrl + path;
+
+  Map<String, String> _sanitizeHeaders(Map<String, String>? headers) {
+    if (headers == null || headers.isEmpty) return const <String, String>{};
+    return headers.map((key, value) {
+      final lowerKey = key.toLowerCase();
+      if (lowerKey == 'authorization') {
+        return MapEntry<String, String>(key, _maskBearer(value));
+      }
+      if (lowerKey == 'x-sdk-key') {
+        return MapEntry<String, String>(key, _maskValue(value));
+      }
+      return MapEntry<String, String>(key, value);
+    });
+  }
+
+  String _maskBearer(String value) {
+    final trimmed = value.trim();
+    if (!trimmed.startsWith('Bearer ')) return _maskValue(trimmed);
+    final token = trimmed.substring(7);
+    return 'Bearer ${_maskValue(token)}';
+  }
+
+  String _maskValue(String value) {
+    if (value.length <= 6) return '***';
+    return '${value.substring(0, 3)}***${value.substring(value.length - 3)}';
+  }
+
+  String _formatJson(Object? value) {
+    if (value == null) return 'null';
+    try {
+      return jsonEncode(value);
+    } catch (_) {
+      return value.toString();
     }
   }
 
